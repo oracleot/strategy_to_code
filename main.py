@@ -28,6 +28,7 @@ st.write("""
 Welcome to the **Strategy to Code Generator**!
 
 **Instructions:**
+0. For mobile users, open the sidebar by clicking the icon on the top left.
 1. Choose a method to describe your Trading Strategy.
 2. Either enter a YouTube video URL (to extract its transcript) or type your strategy description manually.
 3. Click the "Generate Code" button.
