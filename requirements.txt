@@ -4,3 +4,4 @@ langchain
 langgraph
 langchain-text-splitters
 langchain_community
+langchain-openai
