@@ -1,14 +1,37 @@
-import streamlit as st
-import json
 from openai import OpenAI
 from youtube_transcript_api import YouTubeTranscriptApi
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.chat_models import init_chat_model
+from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains.combine_documents import create_stuff_documents_chain
+import streamlit as st
+import re
 
 api_key = st.secrets["openai_api_key"]
 
+llm = init_chat_model("gpt-4o-mini", model_provider="openai", temperature=0, api_key=api_key)
+
 client = OpenAI(api_key=api_key)
+
+def convert_youtube_url(url: str) -> str:
+    # Check if the URL is already in the full format
+    if re.match(r"https://www\.youtube\.com/watch\?v=", url):
+        return url
+    
+    # Match and convert shortened youtu.be links
+    match = re.match(r"https://youtu\.be/([\w-]+)", url)
+    if match:
+        video_id = match.group(1)
+        return f"https://www.youtube.com/watch?v={video_id}"
+    
+    # If URL doesn't match known formats, return as is
+    return url
 
 def get_transcript(video_url):
     try:
+        # Handle short youtube URLs
+        video_url = convert_youtube_url(video_url).strip()
+        
         # Extract video ID from URL
         video_id = video_url.split("v=")[-1].split("&")[0]
         
@@ -22,162 +45,83 @@ def get_transcript(video_url):
     except Exception as e:
         return f"Error: {str(e)}"
 
-def extract_trading_strategy(transcript_text):
-    """Uses GPT-4 to extract structured trading strategy details from a transcript."""
-    prompt = f"""
-    Extract the trading strategy details from the following transcript and return it in structured JSON format.
-    The JSON should include:
-    - "indicators": List of indicators used (e.g., RSI, MACD, EMA)
-    - "parameters": Parameters for each indicator (e.g., RSI period: 14, EMA short: 9, EMA long: 50)
-    - "conditions": Entry and exit conditions for trades (e.g., RSI crossing 50 upwards means buy)
-    - "notes": Any additional relevant information.
-
-    Rules:
-    - Use "ma" for moving averages (with period as a subkey).
-    - Use standard indicator names (e.g., "rsi", "macd") in lowercase.
-    - All keys should be in lowercase.
-    - Provide a descriptive explanation in the "function" field for each indicator.
-
-    Transcript:
-    {transcript_text}
-    """
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            store=True,
-            messages=[
-                {"role": "system", "content": "You are an expert in trading strategies and structured data extraction."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        result = response.choices[0].message.content.strip()
-        # Optionally, validate the JSON
-        json.loads(result)
-    except Exception as e:
-        raise RuntimeError("Failed to extract trading strategy details") from e
-
-    return result
-
-def generate_functions(strategy_data):
+def generate_functions(strategy_desc):
     """Uses GPT to create Python functions for computing indicators and generating alerts."""
-    prompt = f"""
-    Given the following strategy data: {strategy_data}, can you create two Python functions?
 
-    1. A `compute_indicators` function that takes a DataFrame (`df`) of crypto data (from another `extract_crypto_data` function) and computes the indicators as specified in the `indicators` section of the strategy. The function should return the updated DataFrame with the computed indicators.
-
-    2. A `generate_alert` function that takes the updated `df` (with computed indicators) and generates an alert signal that guides traders to take an action (either 'Buy', 'Sell', or 'Hold') based on the conditions defined in the `conditions` section of the strategy.
-
-    Below is an example of similar functions that should help guide the output:
-
-    ```python
-    def get_crypto_data(symbol="AAVEUSDT", interval="1m", limit=200):
-        url = f"https://api.binance.com/api/v3/klines?symbol={{symbol}}&interval={{interval}}&limit={{limit}}"
-        response = requests.get(url).json()
-        df = pd.DataFrame(response, columns=["timestamp", "open", "high", "low", "close", "volume", "close_time", "quote_asset_volume", "trades", "taker_buy_base", "taker_buy_quote", "ignore"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-        return df[["timestamp", "close", "volume"]]
-
-    def compute_indicators(df):
-        df["EMA_9"] = EMAIndicator(df["close"], window=9).ema_indicator()
-        df["EMA_50"] = EMAIndicator(df["close"], window=50).ema_indicator()
-        
-        rsi = RSIIndicator(df["close"], window=7)  # Reduced window for scalping
-        df["RSI"] = rsi.rsi()
-
-        macd = MACD(df["close"], window_slow=13, window_fast=5, window_sign=9)  # More sensitive MACD
-        df["MACD"] = macd.macd()
-        df["Signal"] = macd.macd_signal()
-
-        df["Trend"] = df["EMA_9"] > df["EMA_50"]  # EMA-based trend detection
-        df["Trend"] = df["Trend"].apply(lambda x: "Up" if x else "Down")
-
-        df["Avg_Volume"] = df["volume"].rolling(window=20).mean()
-        
-        return df
-
-    def generate_alert():
-        df = get_crypto_data()
-        df = compute_indicators(df)
-        latest = df.iloc[-2]  # Use previous candle for more accurate decisions
-
-        action = "Hold"
-        if (latest["Trend"] == "Down" and latest["MACD"] < latest["Signal"] and 
-            latest["RSI"] < 40 and latest["volume"] > latest["Avg_Volume"] * 1.2):  # Volume spike filter
-            action = "Sell"
-        elif (latest["Trend"] == "Up" and latest["MACD"] > latest["Signal"] and 
-            latest["RSI"] > 60 and latest["volume"] > latest["Avg_Volume"] * 1.2):
-            action = "Buy"
-
-        alert = {{
-            "Trend": latest["Trend"],
-            "RSI": round(latest["RSI"], 2),
-            "MACD": "Bullish" if latest["MACD"] > latest["Signal"] else "Bearish",
-            "Volume": latest["volume"],
-            "Timestamp": str(latest["timestamp"]),
-            "ACTION": action
-        }}
-        
-        return alert
-    ```
-    Ensure that the compute_indicators function can dynamically handle different types of indicators (RSI, MACD, Moving Averages, etc.) and compute the necessary values based on the strategy data. Also, the generate_alert function should interpret the conditions provided and return the appropriate action. Also, stick to the functions generated, instructions on how to install. Avoid other unnecessary outputs or explanations.
-
-    The strategy data may look like this:
-    ```json
-    {{
-        "indicators": [
-            {{
-                "rsi": {{
-                    "name": "Relative Strength Index",
-                    "function": "Measures the magnitude of recent price changes to evaluate overbought or oversold conditions.",
-                    "parameters": {{
-                        "period": 14
-                    }}
-                }}
-            }},
-            {{
-                "macd": {{
-                    "name": "MACD",
-                    "function": "Tracks the difference between a fast and slow exponential moving average, often used to identify momentum shifts.",
-                    "parameters": {{
-                        "window_slow": 26,
-                        "window_fast": 12,
-                        "window_sign": 9
-                    }}
-                }}
-            }}
-        ],
-        "conditions": [
-            {{
-                "entry": {{
-                    "condition": "If the RSI is below 30, and the MACD histogram is above the signal line, consider it as a buying signal."
-                }},
-                "exit": {{
-                    "condition": "If the RSI exceeds 70, or the MACD crosses below the signal line, consider it a selling signal."
-                }}
-            }}
-        ],
-        "notes": "Ensure that indicators are used in combination rather than relying on a single indicator for entry/exit."
-    }}
-    ```
+    system_template = """
+    You are an expert algorithmic trader and software engineer specializing in developing robust, production-ready trading strategies.
+    You have deep knowledge in technical analysis, risk management, and structured data extraction.
+    When generating code, use clear, modular, and well-commented Python that leverages relevant libraries (e.g., Pandas, NumPy, TA-Lib) 
+    and best practices for error handling and testing.
+    Ensure your solutions extract structured trading signals from market data and implement strategy logic efficiently.
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4",
-        store=True,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert algorithmic trader and software engineer specializing in developing robust, production-ready trading strategies. "
-                    "You have deep knowledge in technical analysis, risk management, and structured data extraction. "
-                    "When generating code, use clear, modular, and well-commented Python that leverages relevant libraries (e.g., Pandas, NumPy, TA-Lib) and best practices for error handling and testing. "
-                    "Ensure your solutions extract structured trading signals from market data and implement strategy logic efficiently."
-                )
-            },
-            {"role": "user", "content": prompt}
-        ]
-    )
+    user_template = """
+    Given the following trading strategy description:
 
-    return response.choices[0].message.content
+    {strategy_desc}
+
+    Please generate two Python functions:
+
+    1️⃣ **`calculate_indicators(df: pd.DataFrame) -> pd.DataFrame`**  
+       - Takes a Pandas DataFrame (`df`) of market data with columns: `Close`, `High`, `Low`, `Volume`, `timestamp`.  
+       - Computes **technical indicators** relevant to the strategy, such as moving averages, RSI, MACD, and others as needed.  
+       - Returns the updated DataFrame with these computed indicators.
+
+    2️⃣ **`generate_trading_signal(df: pd.DataFrame) -> dict`**  
+       - Takes the updated `df` (with computed indicators) and generates a trading signal.  
+       - Determines the **trend** based on moving average crossovers.  
+       - Uses **MACD & RSI** for confirmation before deciding to `BUY`, `SELL`, or `HOLD`.  
+       - Returns a structured alert as **valid JSON**, following this exact format:
+         ```json
+         {{
+             "Trend": "Uptrend" | "Downtrend" | "Sideways",
+             "RSI": float,
+             "MACD": "Bullish" | "Bearish",
+             "Volume": int,
+             "Timestamp": str,
+             "ACTION": "BUY" | "SELL" | "HOLD"
+         }}
+         ```
+
+    **Additional Requirements:**  
+    - Use Python best practices with Pandas and `ta` library.  
+    - Ensure efficient calculations and error handling.  
+    - Functions should be modular and production-ready.
+    
+    Return the code ONLY, no explanations.
+    """
+
+    # Create a ChatPromptTemplate properly
+    prompt_template = ChatPromptTemplate.from_messages([
+        ("system", system_template),
+        ("user", user_template)
+    ])
+
+    # Correct way to invoke the template
+    prompt = prompt_template.format_messages(strategy_desc=strategy_desc)
+
+    response = llm.invoke(prompt)
+    
+    return response.content
+
+def save_transcript_to_file(transcript_text: str, filename: str) -> None:
+    with open(filename, "w") as file:
+        file.write(transcript_text)
+    st.success(f"Transcript saved to {filename}")
+
+def split_text_into_chunks(text: str) -> list:
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=0,
+        length_function=len,
+        is_separator_regex=False,
+    )
+    texts = text_splitter.create_documents([text])
+    return texts
+
+def summarize_chunk(chunk):
+    prompt = ChatPromptTemplate.from_template("Summarize this trading strategy ensuring that all relevant indicators mentioned are retained in summary: {context}")
+    chain = create_stuff_documents_chain(llm, prompt)
+    result = chain.invoke({"context": chunk})
+    return result

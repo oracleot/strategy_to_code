@@ -1,5 +1,5 @@
 import streamlit as st
-from apis import get_transcript, extract_trading_strategy, generate_functions
+from apis import generate_functions, get_transcript, summarize_chunk, split_text_into_chunks
 
 # Sidebar Layout
 with st.sidebar:
@@ -8,11 +8,10 @@ with st.sidebar:
     method_is_video = input_method == "Get from YouTube Video"
     
     if method_is_video:
-        video_url = st.text_input(
+        user_input = st.text_input(
             "Enter YouTube Video URL",
             placeholder="https://www.youtube.com/watch?v=b2QpsIdEkfk"
         )
-        user_input = video_url.strip()
     else:
         strategy_description = st.text_area(
             "Describe your Trading Strategy",
@@ -43,46 +42,56 @@ if run_button:
         status_text = st.empty()
 
         try:
-            # Stage 1: Get Strategy Description (Transcript or Manual Description)
+            # Step 1: Get Strategy Description (Transcript or Manual Description)
             if method_is_video:
-                status_text.text("Fetching transcript from video...")
+                status_text.info("Fetching transcript from video...")
                 transcript = get_transcript(user_input)
             else:
-                status_text.text("Using manual strategy description...")
+                status_text.info("Using manual strategy description...")
                 transcript = user_input
             progress_bar.progress(25)
-
-            # Stage 2: Extract Structured Data
-            status_text.text("Extracting structured data from strategy description...")
-            strategy_data = extract_trading_strategy(transcript)
-            progress_bar.progress(50)
-
-            # Stage 3: Generate Functions
-            status_text.text("Generating code...")
-            generated_functions = generate_functions(strategy_data)
-            progress_bar.progress(75)
-
-            # Finalize Progress
-            status_text.text("Finalizing...")
-            progress_bar.progress(100)
-            status_text.empty()
-
-            # Create Tabs for Output
-            tabs = st.tabs(["📝 Strategy Description", "📊 Structured Data", "💻 Generated Code"])
-
-            with tabs[0]:
-                st.subheader("Strategy Description")
-                st.write(transcript)
-
-            with tabs[1]:
-                st.subheader("Structured Data")
-                st.json(strategy_data)
-
-            with tabs[2]:
-                st.subheader("Generated Code")
-                st.code(generated_functions, language="python")
-
+        
         except Exception as e:
             progress_bar.empty()
             status_text.empty()
             st.error(f"An error occurred: {e}")
+
+        try:
+            # Step 2: Summarise strategy
+            status_text.info("Summarizing strategy...")
+            # TODO: abstract inside API -> summarize_strategy(transcript)
+            chunks = split_text_into_chunks(transcript)
+            summary = summarize_chunk(chunks)
+            progress_bar.progress(50)
+  
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error(f"An error occurred: {e}")
+
+        try:
+            # Step 3: Generate Functions
+            status_text.info("Generating code from strategy...")
+            generated_functions = generate_functions(summary)
+            progress_bar.progress(75)
+  
+        except Exception as e:
+            progress_bar.empty()
+            status_text.empty()
+            st.error(f"An error occurred: {e}")
+
+        # Finalize Progress
+        status_text.info("Finalizing...")
+        progress_bar.progress(100)
+        status_text.empty()
+
+        # Create Tabs for Output
+        tabs = st.tabs(["Strategy Summary", "Generated Code"])
+
+        with tabs[0]:
+            st.subheader("📝 Strategy Summary")
+            st.write(summary)
+
+        with tabs[1]:
+            st.subheader("💻 Generated Code")
+            st.code(generated_functions, language="python")
